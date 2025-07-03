@@ -8,6 +8,11 @@
 //
 //------------------------------------------------------------------------------
 
+#ifdef _WIN32
+#define __PRETTY_FUNCTION__ __FUNCSIG__
+#endif
+
+
 #include <assert.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -775,7 +780,7 @@ mbus_data_bin_decode(unsigned char *dst, const unsigned char *src, size_t len, s
     if (src && dst)
     {
         while((i < len) && ((pos+3) < max_len)) {
-            pos += snprintf(&dst[pos], max_len - pos, "%.2X ", src[len - i - 1]);
+            pos += snprintf(&dst[pos], max_len - pos, "%.2X ", src[i]);
             i++;
         }
 
@@ -805,7 +810,6 @@ mbus_data_bin_decode(unsigned char *dst, const unsigned char *src, size_t len, s
 void
 mbus_data_tm_decode(struct tm *t, unsigned char *t_data, size_t t_data_size)
 {
-    int year, hundred_year;
     if (t == NULL)
     {
         return;
@@ -845,14 +849,8 @@ mbus_data_tm_decode(struct tm *t, unsigned char *t_data, size_t t_data_size)
                 t->tm_hour  = t_data[1] & 0x1F;
                 t->tm_mday  = t_data[2] & 0x1F;
                 t->tm_mon   = (t_data[3] & 0x0F) - 1;
-                year = (((t_data[2] & 0xE0) >> 5) |
+                t->tm_year  = 100 + (((t_data[2] & 0xE0) >> 5) |
                               ((t_data[3] & 0xF0) >> 1));
-                hundred_year = (t_data[1] & 0x60) >> 5;
-                if (hundred_year == 0 && year <= 80)  //  compatibility with old meters with a circular two digit date
-                {
-                    hundred_year = 1;
-                }
-                t->tm_year  = 100 * hundred_year + year;
                 t->tm_isdst = (t_data[1] & 0x80) ? 1 : 0;  // day saving time
             }
         }
@@ -3390,14 +3388,9 @@ mbus_data_record_decode(mbus_data_record *record)
                 break;
 
             case 0x0D: // variable length
-                if (record->data[0] <= 0xBF)
+                if (record->data_len <= 0xBF)
                 {
-                    mbus_data_str_decode(buff, &record->data[1], record->data_len - 1);
-                    break;
-                }
-                else
-                {
-                    mbus_data_bin_decode(buff, &record->data[1], record->data_len - 1, sizeof(buff));
+                    mbus_data_str_decode(buff, record->data, record->data_len);
                     break;
                 }
                 /*@fallthrough@*/
@@ -3966,21 +3959,15 @@ mbus_data_variable_parse(mbus_frame *frame, mbus_data_variable *data)
             if ((record->drh.dib.dif & MBUS_DATA_RECORD_DIF_MASK_DATA) == 0x0D) // flag for variable length data
             {
                 if(frame->data[i] <= 0xBF)
-                    record->data_len = frame->data[i];
-                else if(frame->data[i] >= 0xC0 && frame->data[i] <= 0xC9)
-                    record->data_len = (frame->data[i] - 0xC0) * 2;
-                else if(frame->data[i] >= 0xD0 && frame->data[i] <= 0xD9)
-                    record->data_len = (frame->data[i] - 0xD0) * 2;
+                    record->data_len = frame->data[i++];
+                else if(frame->data[i] >= 0xC0 && frame->data[i] <= 0xCF)
+                    record->data_len = (frame->data[i++] - 0xC0) * 2;
+                else if(frame->data[i] >= 0xD0 && frame->data[i] <= 0xDF)
+                    record->data_len = (frame->data[i++] - 0xD0) * 2;
                 else if(frame->data[i] >= 0xE0 && frame->data[i] <= 0xEF)
-                    record->data_len = frame->data[i] - 0xE0;
-                else if(frame->data[i] >= 0xF0 && frame->data[i] <= 0xF4)
-                    record->data_len = (frame->data[i] - 0xEC) * 4;
-                else if(frame->data[i] == 0xF5)
-                    record->data_len = 48;
-                else if(frame->data[i] == 0xF6)
-                    record->data_len = 64;
-                // keep the LVAR byte, which is required to determine the data type
-                record->data_len++;
+                    record->data_len = frame->data[i++] - 0xE0;
+                else if(frame->data[i] >= 0xF0 && frame->data[i] <= 0xFA)
+                    record->data_len = frame->data[i++] - 0xF0;
             }
 
             if (i + record->data_len > frame->data_size)

@@ -10,9 +10,12 @@
 // Large parts of this file was contributed by Tomas Menzl.
 //
 //------------------------------------------------------------------------------
+#ifdef _WIN32
+#define __PRETTY_FUNCTION__ __FUNCSIG__
+#endif
 
 #include "mbus-protocol-aux.h"
-#include "mbus-serial.h"
+//#include "mbus-serial.h"
 #include "mbus-tcp.h"
 
 #include <stdio.h>
@@ -983,30 +986,19 @@ int mbus_variable_value_decode(mbus_data_record *record, double *value_out_real,
 
             case 0x0D: /* variable length */
             {
-                if (record->data[0] <= 0xBF) /* ascii string */
-                {
-                    /* we create a buffer the size of data_len (minus 1 because we skip the LVAR byte, plus 1 for the terminating 0) */
-                    if ((*value_out_str = (char*) malloc(record->data_len)) == NULL)
+                if (record->data_len <= 0xBF) {
+                    if ((*value_out_str = (char*) malloc(record->data_len + 1)) == NULL)
                     {
                         MBUS_ERROR("Unable to allocate memory");
                         return -1;
                     }
-                    *value_out_str_size = record->data_len - 1;
-                    mbus_data_str_decode((unsigned char*)(*value_out_str), &record->data[1], record->data_len - 1);
-                }
-                else /* binary or BCD (printed as binary for now) */
-                {
-                    /* We create a buffer of 3 bytes per printed byte (2 nibbles + space), plus a terminating 0. We are not printing the LVAR byte value. */
-                    if ((*value_out_str = (char*) malloc(3 * (record->data_len - 1) + 1)) == NULL)
-                    {
-                        MBUS_ERROR("Unable to allocate memory");
-                        return -1;
-                    }
-                    *value_out_str_size = 3 * (record->data_len - 1);
-                    mbus_data_bin_decode((unsigned char*)(*value_out_str), &record->data[1], record->data_len - 1, 3 * (record->data_len - 1) + 1);
+                    *value_out_str_size = record->data_len;
+                    mbus_data_str_decode((unsigned char*)(*value_out_str), record->data, record->data_len);
+                    result = 0;
                     break;
                 }
-                result = 0;
+                result = -2;
+                MBUS_ERROR("Non ASCII variable length not implemented yet\n");
                 break;
             }
 
@@ -1501,6 +1493,7 @@ mbus_frame_data_xml_normalized(mbus_frame_data *data)
     return NULL;
 }
 
+/*
 mbus_handle *
 mbus_context_serial(const char *device)
 {
@@ -1548,6 +1541,7 @@ mbus_context_serial(const char *device)
 
     return handle;
 }
+*/
 
 mbus_handle *
 mbus_context_tcp(const char *host, uint16_t port)
@@ -1936,6 +1930,42 @@ mbus_send_request_frame(mbus_handle * handle, int address)
 }
 
 //------------------------------------------------------------------------------
+// send a request packet to from master to slave
+//------------------------------------------------------------------------------
+int
+mbus_send_request_frame_fcb(mbus_handle * handle, int address)
+{
+    int retval = 0;
+    mbus_frame *frame;
+
+    if (mbus_is_primary_address(address) == 0)
+    {
+        MBUS_ERROR("%s: invalid address %d\n", __PRETTY_FUNCTION__, address);
+        return -1;
+    }
+
+    frame = mbus_frame_new(MBUS_FRAME_TYPE_SHORT);
+
+    if (frame == NULL)
+    {
+        MBUS_ERROR("%s: failed to allocate mbus frame.\n", __PRETTY_FUNCTION__);
+        return -1;
+    }
+
+    frame->control = MBUS_CONTROL_MASK_REQ_UD2 | MBUS_CONTROL_MASK_DIR_M2S | MBUS_CONTROL_MASK_FCB;
+    frame->address = address;
+
+    if (mbus_send_frame(handle, frame) == -1)
+    {
+        MBUS_ERROR("%s: failed to send mbus frame.\n", __PRETTY_FUNCTION__);
+        retval = -1;
+    }
+
+    mbus_frame_free(frame);
+    return retval;
+}
+
+//------------------------------------------------------------------------------
 // send a user data packet from master to slave
 //------------------------------------------------------------------------------
 int
@@ -2227,7 +2257,7 @@ mbus_send_ping_frame(mbus_handle *handle, int address, char purge_response)
 int
 mbus_select_secondary_address(mbus_handle * handle, const char *mask)
 {
-    int ret;
+    int ret, frameType;
     mbus_frame reply;
 
     if (mask == NULL || strlen(mask) != 16)
@@ -2260,7 +2290,7 @@ mbus_select_secondary_address(mbus_handle * handle, const char *mask)
         return MBUS_PROBE_COLLISION;
     }
 
-    if (mbus_frame_type(&reply) == MBUS_FRAME_TYPE_ACK)
+    if (frameType = mbus_frame_type(&reply) == MBUS_FRAME_TYPE_ACK)
     {
         /* check for more data (collision) */
         if (mbus_purge_frames(handle))
@@ -2271,7 +2301,7 @@ mbus_select_secondary_address(mbus_handle * handle, const char *mask)
         return MBUS_PROBE_SINGLE;
     }
 
-    MBUS_ERROR("%s: Unexpected reply for address [%s].\n", __PRETTY_FUNCTION__, mask);
+    MBUS_ERROR("%s: Unexpected reply for address [%s]. ret=%d, frameType=%d\n", __PRETTY_FUNCTION__, mask, ret, frameType);
 
     return MBUS_PROBE_NOTHING;
 }
